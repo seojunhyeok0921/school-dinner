@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>학교 석식 출입 관리 시스템</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- jsQR Library (for scanning) -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <!-- qrcode.js Library (for generating QR code in student mode) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    
+    <style>
+        /* Custom styles for the app */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        .main-card {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        }
+        /* Scanner specific styles */
+        #video, #canvas { 
+            display: block; 
+            width: 100%; 
+            height: 100%; 
+        }
+        #canvas { position: absolute; top: 0; left: 0; }
+        .scan-container {
+            position: relative; 
+            width: 100%; 
+            padding-top: 100%; /* 1:1 비율 유지 */
+            max-width: 400px; 
+            margin: 0 auto;
+            border-radius: 1rem; 
+            overflow: hidden; 
+            box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1);
+        }
+        .scan-area-mask { position: absolute; top: 0; left: 0; width: 100%; height: 100%; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); }
+        .scan-area-cutout {
+            position: absolute; top: 25%; left: 25%; width: 50%; height: 50%; 
+            border: 4px solid #3b82f6; z-index: 10; animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { border-color: #3b82f6; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+            50% { border-color: #10b981; box-shadow: 0 0 20px rgba(16, 185, 129, 0.8); }
+            100% { border-color: #3b82f6; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+        }
+        .status-waiting { background-color: #fef3c7; border-left: 8px solid #f59e0b; }
+        .status-success { background-color: #d1fae5; border-left: 8px solid #10b981; }
+        .status-error { background-color: #fee2e2; border-left: 8px solid #ef4444; }
+        
+        /* Table styles */
+        .meal-status-tag { padding: 4px 8px; border-radius: 9999px; font-size: 0.875rem; font-weight: 600; }
+        .meal-status-paid { background-color: #d1fae5; color: #065f46; } /* 신청함 (Green) */
+        .meal-status-unpaid { background-color: #fef3c7; color: #92400e; } /* 미신청 (Yellow) */
+        .checkin-status-waiting { background-color: #fef3c7; color: #92400e; } /* 대기 중 (Yellow) */
+        .checkin-status-complete { background-color: #d1fae5; color: #065f46; } /* 체크인 완료 (Green) */
+
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen">
+
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-extrabold text-gray-900 mb-6 text-center flex items-center justify-center">
+            <span class="mr-3 text-4xl">👨‍🎓</span> 학교 석식 출입 관리 시스템
+        </h1>
+        <p id="user-id-display" class="text-sm text-gray-500 mb-6 text-center">사용자 ID: 로딩 중...</p>
+        
+        <!-- Mode Switch Buttons -->
+        <div class="flex justify-center space-x-0 bg-white p-1 rounded-xl shadow-lg mb-8 max-w-lg mx-auto">
+            <button id="student-mode-btn" onclick="toggleMode('student')" class="flex-1 px-4 py-2 rounded-xl font-semibold transition-all bg-white text-gray-700 hover:bg-gray-100">
+                학생 모드 (QR 코드 생성)
+            </button>
+            <button id="staff-mode-btn" onclick="toggleMode('staff')" class="flex-1 px-4 py-2 rounded-xl font-semibold transition-all bg-blue-600 text-white shadow-md">
+                관리자 모드
+            </button>
+        </div>
+
+        <!-- Main Content Area -->
+        <div id="main-content-area" class="main-card">
+            
+            <!-- --------------------------------- 
+                 관리자 모드 View 
+                 --------------------------------- -->
+            <div id="staff-mode-view" class="space-y-8" style="display: none;">
+                <h2 class="text-2xl font-bold text-gray-800 text-center mb-6">관리자 기능</h2>
+                
+                <!-- Admin Sub-Tab Switch -->
+                <div class="flex justify-center space-x-0 bg-gray-100 p-1 rounded-lg max-w-md mx-auto">
+                    <button id="scanner-tab-btn" onclick="toggleAdminTab('scanner')" class="flex-1 px-4 py-2 rounded-md font-semibold transition-all bg-blue-600 text-white">
+                        체크인 스캐너
+                    </button>
+                    <button id="data-tab-btn" onclick="toggleAdminTab('data')" class="flex-1 px-4 py-2 rounded-md font-semibold transition-all bg-gray-100 text-gray-700 hover:bg-white">
+                        학생 데이터 관리
+                    </button>
+                </div>
+                
+                <!-- 1. Scanner Tab Content -->
+                <div id="scanner-tab" class="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
+                    <!-- Scanner -->
+                    <div class="scan-container">
+                        <video id="video" class="absolute inset-0"></video>
+                        <canvas id="canvas" class="absolute inset-0 hidden"></canvas>
+                        
+                        <div id="scan-ui-overlay" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div class="scan-area-mask"></div>
+                            <div class="scan-area-cutout"></div>
+                        </div>
+        
+                        <div id="no-camera-msg" class="absolute inset-0 bg-gray-700 flex flex-col items-center justify-center p-4 text-white text-center rounded-xl" style="display: none;">
+                            <svg class="w-10 h-10 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            <p class="font-semibold">카메라 접근 불가</p>
+                            <p class="text-sm mt-1">카메라 권한을 허용하고, 후면 카메라가 활성화되어 있는지 확인해 주세요.</p>
+                        </div>
+                    </div>
+    
+                    <!-- Status Box & Log -->
+                    <div class="flex flex-col space-y-4">
+                        <div id="status-box" class="result-box p-5 rounded-xl status-waiting">
+                            <h3 id="status-title" class="text-xl font-bold text-gray-800">체크인 스캐너 대기 중...</h3>
+                            <p id="status-message" class="mt-1 text-gray-600">학생의 QR 코드를 스캔 영역에 비춰주세요.</p>
+                        </div>
+                        <div class="bg-gray-50 p-4 rounded-xl shadow-inner">
+                            <h3 class="text-lg font-semibold text-gray-800 mb-3">스캔 로그</h3>
+                            <ul id="log-list" class="space-y-2 text-sm text-gray-600 h-32 overflow-y-auto">
+                                <li class="p-2 bg-white rounded">시스템 시작됨.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Data Management Tab Content -->
+                <div id="data-tab" class="space-y-6" style="display: none;">
+                    
+                    <div class="bg-gray-50 p-6 rounded-xl shadow-inner">
+                        <h3 class="text-xl font-bold text-gray-800 mb-3">학생 정보 관리 (결제 상태 업데이트)</h3>
+                        <p class="text-gray-600 text-sm mb-4">
+                            학생이 등록(회원가입)을 완료하면 여기에 목록이 표시됩니다. 결제 상태를 수정할 수 있습니다.
+                        </p>
+                        
+                        <div id="data-status-msg" class="mt-3 text-sm text-center font-semibold text-green-600" style="display: none;"></div>
+                    </div>
+                    
+                </div>
+                
+                <!-- 3. Real-time Status Table (Shared) -->
+                <div class="bg-white p-6 rounded-xl shadow mt-8">
+                    <h3 class="text-2xl font-bold text-gray-800 mb-4">전체 학생 현황 (실시간)</h3>
+                    
+                    <div class="overflow-x-auto relative shadow-md sm:rounded-lg mb-4">
+                        <table class="w-full text-sm text-left text-gray-500">
+                            <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="py-3 px-6">이름</th>
+                                    <th scope="col" class="py-3 px-6">학번</th>
+                                    <th scope="col" class="py-3 px-6">석식 상태</th>
+                                    <th scope="col" class="py-3 px-6">체크인 상태</th>
+                                    <th scope="col" class="py-3 px-6">QR 코드 ID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="student-status-body">
+                                <tr class="bg-white border-b"><td class="py-4 px-6 text-center" colspan="5">데이터 로딩 중...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <button onclick="resetTodayCheckins()" class="block mx-auto py-2 px-6 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center shadow-md">
+                        <span class="text-xl mr-2">🔄</span> 오늘 체크인 상태 모두 초기화
+                    </button>
+                </div>
+            </div>
+
+
+            <!-- --------------------------------- 
+                 학생 모드 View 
+                 --------------------------------- -->
+            <div id="student-mode-view" class="p-8 flex flex-col items-center justify-center h-full rounded-xl shadow-lg">
+                <h2 id="student-view-title" class="text-2xl font-bold mb-6 text-gray-800 text-center">학생 모드</h2>
+                
+                <!-- 인증 영역 (회원가입/로그인) -->
+                <div id="student-auth-area" class="max-w-md w-full space-y-4">
+                    <!-- 학생 정보 등록 (회원가입) Form -->
+                    <div id="register-form">
+                        <h3 class="text-xl font-bold text-blue-600 mb-4 text-center">📌 학생 등록 (회원가입)</h3>
+                        <input id="register-name" type="text" placeholder="이름 (예: 홍길동)" class="w-full p-3 border border-gray-300 rounded-lg mb-3 focus:ring-blue-500" required>
+                        <input id="register-grade-class" type="text" placeholder="학년/반 (예: 1학년 4반)" class="w-full p-3 border border-gray-300 rounded-lg mb-3 focus:ring-blue-500" required>
+                        <input id="register-pin" type="password" placeholder="4자리 비밀 핀 번호 (예: 1234)" pattern="\d{4}" maxlength="4" class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-blue-500" required>
+                        
+                        <button onclick="registerUser()" class="w-full py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition-colors shadow-md">
+                            ✅ 등록하고 QR 코드 받기
+                        </button>
+                        <p class="text-sm text-center text-gray-500 mt-3">이미 등록하셨다면 <a href="#" onclick="showLoginForm()" class="text-blue-600 hover:text-blue-800 font-semibold">로그인</a>해 주세요.</p>
+                        <p id="register-status" class="mt-3 text-center text-sm font-semibold text-red-600" style="display: none;"></p>
+                    </div>
+
+                    <!-- 로그인 Form -->
+                    <div id="login-form" style="display: none;">
+                        <h3 class="text-xl font-bold text-blue-600 mb-4 text-center">🔑 QR 코드 활성화 (로그인)</h3>
+                        <input id="login-name" type="text" placeholder="등록한 이름" class="w-full p-3 border border-gray-300 rounded-lg mb-3 focus:ring-blue-500" required>
+                        <input id="login-pin" type="password" placeholder="4자리 비밀 핀 번호" pattern="\d{4}" maxlength="4" class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-blue-500" required>
+                        
+                        <button onclick="loginUser()" class="w-full py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-md">
+                            ➡️ 로그인 및 QR 코드 표시
+                        </button>
+                        <p class="text-sm text-center text-gray-500 mt-3">등록하지 않으셨다면 <a href="#" onclick="showRegisterForm()" class="text-green-600 hover:text-green-800 font-semibold">학생 등록</a>을 먼저 해주세요.</p>
+                        <p id="login-status" class="mt-3 text-center text-sm font-semibold text-red-600" style="display: none;"></p>
+                    </div>
+
+                </div>
+                
+                <!-- QR 코드 영역 (로그인 후 표시) -->
+                <div id="student-qr-area" class="mt-8 flex flex-col items-center" style="display: none;">
+                    <p id="student-info-display" class="text-xl font-bold text-gray-700 mb-4 text-center"></p>
+                    <p class="text-lg text-blue-600 font-semibold mb-4 text-center">직원 모드 스캐너에 이 코드를 비춰주세요!</p>
+                    <div id="qrcode-display" class="p-4 border-8 border-blue-600 rounded-lg bg-white shadow-2xl">
+                        <!-- QR Code will be generated here -->
+                    </div>
+                    <p class="text-sm text-gray-500 mt-4 text-center">
+                        QR 코드 데이터 (보안 ID): <span id="student-qr-data" class="font-mono text-xs"></span>
+                    </p>
+                    <button onclick="logoutUser()" class="mt-6 py-2 px-4 bg-gray-200 text-gray-700 font-semibold rounded-lg hover:bg-gray-300 transition-colors">
+                        로그아웃 (QR 코드 숨기기)
+                    </button>
+                </div>
+                
+            </div>
+
+
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, getDocs, addDoc, collection, query, where, Timestamp, onSnapshot, updateDoc, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Firestore 디버그 로깅 활성화
+        setLogLevel('Debug');
+
+        // Global Variables
+        let app;
+        let db;
+        let auth;
+        let userId = '';
+        let currentMode = 'student'; // 초기 모드를 학생 모드로 변경
+        let currentAdminTab = 'scanner';
+        let isUserRegistered = false; // 학생이 등록을 완료했는지 여부
+        let studentProfile = null; // 학생 정보 캐시
+        
+        // Scanner Variables
+        let video = document.getElementById('video');
+        let canvasElement = document.getElementById('canvas');
+        let canvas = canvasElement.getContext('2d');
+        let videoStream = null;
+        let isProcessing = false; 
+        let lastScannedCode = null; 
+        
+        // Data Variables
+        let qrCodeInstance = null; 
+        let studentDataCache = {}; // 등록된 학생 정보를 저장할 캐시
+        let checkinDataCache = {}; // 오늘 체크인 정보를 저장할 캐시
+
+        // --- 1. Firebase Initialization and Authentication ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        const USERS_COLLECTION = `/artifacts/${appId}/public/data/users`;
+        const CHECKINS_COLLECTION = `/artifacts/${appId}/public/data/checkins`;
+        const LOGS_COLLECTION = `/artifacts/${appId}/public/data/logs`;
+        const TODAY_DATE = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+        if (firebaseConfig) {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    document.getElementById('user-id-display').textContent = `사용자 ID: ${userId.substring(0, 8)}... (전체 ID: ${userId})`;
+                    console.log("Firebase Auth Ready. User ID:", userId);
+                    
+                    // Auth 완료 후 기본 모드 시작 및 리스너 설정
+                    setupMode(currentMode); 
+                    setupLogListener();
+                    setupStudentStatusListener(); // 학생 현황판 리스너 시작
+                    
+                    // 학생 등록 정보 확인 및 UI 업데이트
+                    checkUserRegistrationStatus(userId);
+
+                } else {
+                    console.log("No user signed in. Attempting anonymous or custom sign-in.");
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase Sign-In Failed:", error);
+                        // Student mode UI will handle the error gracefully
+                    }
+                }
+            });
+        } else {
+            console.error("Firebase configuration is missing.");
+            alertMessage('⚠️ 설정 오류', 'Firebase 설정 정보를 찾을 수 없습니다.', 'error');
+        }
+        
+        /**
+         * 상태 메시지를 UI에 표시합니다.
+         */
+        function alertMessage(title, message, status) {
+            const statusBox = document.getElementById('status-box');
+            if (statusBox) {
+                statusBox.classList.remove('status-waiting', 'status-success', 'status-error');
+                statusBox.classList.add(`status-${status}`);
+                document.getElementById('status-title').textContent = title;
+                document.getElementById('status-message').textContent = message;
+            } else {
+                // For modes where statusBox is not visible (like student mode)
+                console.log(`STATUS [${status.toUpperCase()}]: ${title} - ${message}`);
+            }
+        }
+
+
+        // --- 2. Mode and Tab Management Functions ---
+        
+        /**
+         * 모드 설정 및 전환 처리 ('staff' or 'student')
+         */
+        function setupMode(mode) {
+            currentMode = mode;
+            const staffView = document.getElementById('staff-mode-view');
+            const studentView = document.getElementById('student-mode-view');
+            const staffBtn = document.getElementById('staff-mode-btn');
+            const studentBtn = document.getElementById('student-mode-btn');
+            
+            // 버튼 스타일 업데이트
+            staffBtn.className = 'flex-1 px-4 py-2 rounded-xl font-semibold transition-all';
+            studentBtn.className = 'flex-1 px-4 py-2 rounded-xl font-semibold transition-all';
+
+            if (mode === 'staff') {
+                // 직원 모드 활성화
+                staffView.style.display = 'block';
+                studentView.style.display = 'none';
+                
+                // 직원 모드 버튼 스타일
+                staffBtn.classList.add('bg-blue-600', 'text-white', 'shadow-md');
+                studentBtn.classList.add('bg-white', 'text-gray-700', 'hover:bg-gray-100');
+                
+                // Admin Sub-Tab 상태에 따라 스캐너 시작/중지
+                toggleAdminTab(currentAdminTab); 
+            } else { // student mode
+                // 학생 모드 활성화
+                stopCamera();
+                staffView.style.display = 'none';
+                studentView.style.display = 'flex';
+                
+                // 학생 모드 버튼 스타일
+                staffBtn.classList.add('bg-white', 'text-gray-700', 'hover:bg-gray-100');
+                studentBtn.classList.add('bg-blue-600', 'text-white', 'shadow-md');
+
+                updateStudentModeUI();
+            }
+        }
+
+        /**
+         * 관리자 모드 서브 탭 전환 처리 ('scanner' or 'data')
+         */
+        window.toggleAdminTab = function(tabName) {
+            currentAdminTab = tabName;
+            const scannerTab = document.getElementById('scanner-tab');
+            const dataTab = document.getElementById('data-tab');
+            const scannerBtn = document.getElementById('scanner-tab-btn');
+            const dataBtn = document.getElementById('data-tab-btn');
+
+            // 버튼 스타일 초기화
+            scannerBtn.classList.remove('bg-blue-600', 'text-white', 'bg-gray-100', 'text-gray-700');
+            dataBtn.classList.remove('bg-blue-600', 'text-white', 'bg-gray-100', 'text-gray-700');
+
+            if (tabName === 'scanner') {
+                scannerTab.style.display = 'grid';
+                dataTab.style.display = 'none';
+                startScanner();
+                
+                scannerBtn.classList.add('bg-blue-600', 'text-white');
+                dataBtn.classList.add('bg-gray-100', 'text-gray-700', 'hover:bg-white');
+            } else { // data tab
+                scannerTab.style.display = 'none';
+                dataTab.style.display = 'block';
+                stopCamera();
+                
+                scannerBtn.classList.add('bg-gray-100', 'text-gray-700', 'hover:bg-white');
+                dataBtn.classList.add('bg-blue-600', 'text-white');
+            }
+        }
+
+        /**
+         * 모드 전환 함수 (버튼 클릭 이벤트 핸들러)
+         */
+        window.toggleMode = function(newMode) {
+            if (newMode !== currentMode) {
+                setupMode(newMode);
+            }
+        }
+        
+        // --- 3. Student Registration/Login (Student Mode) ---
+        
+        /**
+         * 현재 사용자 ID가 등록된 학생인지 확인합니다.
+         */
+        async function checkUserRegistrationStatus(id) {
+            if (!db || !id) return;
+            try {
+                const userDocRef = doc(db, USERS_COLLECTION, id);
+                const userDoc = await getDoc(userDocRef);
+                
+                if (userDoc.exists()) {
+                    isUserRegistered = true;
+                    studentProfile = userDoc.data();
+                    // 등록은 했지만 로그인이 필요한 상태로 시작
+                    showLoginForm(); 
+                } else {
+                    isUserRegistered = false;
+                    studentProfile = null;
+                    showRegisterForm();
+                }
+                updateStudentModeUI();
+            } catch (e) {
+                console.error("Error checking user registration:", e);
+                // 오류 발생 시에도 일단 등록 폼을 보여줍니다.
+                showRegisterForm();
+            }
+        }
+
+        /**
+         * 학생 모드의 UI를 등록 상태에 따라 업데이트합니다.
+         */
+        function updateStudentModeUI() {
+            if (currentMode !== 'student') return;
+            
+            const authArea = document.getElementById('student-auth-area');
+            const qrArea = document.getElementById('student-qr-area');
+
+            if (studentProfile && studentProfile.isLoggedIn) {
+                // 로그인 완료 상태
+                authArea.style.display = 'none';
+                qrArea.style.display = 'flex';
+                
+                document.getElementById('student-info-display').textContent = 
+                    `${studentProfile.grade_class_number} ${studentProfile.name} 님`;
+                
+                displayStudentQrCode(userId); // 현재 인증된 Firebase userId를 QR 코드 내용으로 사용
+                document.getElementById('student-qr-data').textContent = userId.substring(0, 10) + '...';
+                
+            } else {
+                // 미등록 또는 로그아웃 상태
+                authArea.style.display = 'block';
+                qrArea.style.display = 'none';
+            }
+        }
+
+        /**
+         * 회원가입 폼 표시
+         */
+        window.showRegisterForm = function() {
+            document.getElementById('register-form').style.display = 'block';
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('student-view-title').textContent = '학생 모드 - 등록하기';
+            document.getElementById('login-status').style.display = 'none';
+        }
+
+        /**
+         * 로그인 폼 표시
+         */
+        window.showLoginForm = function() {
+            document.getElementById('register-form').style.display = 'none';
+            document.getElementById('login-form').style.display = 'block';
+            document.getElementById('student-view-title').textContent = '학생 모드 - 로그인';
+            document.getElementById('register-status').style.display = 'none';
+        }
+
+        /**
+         * 학생 등록 (회원가입) 처리
+         */
+        window.registerUser = async function() {
+            if (!db || !userId) return;
+            const name = document.getElementById('register-name').value.trim();
+            const gradeClass = document.getElementById('register-grade-class').value.trim();
+            const pin = document.getElementById('register-pin').value.trim();
+            const statusMsg = document.getElementById('register-status');
+            statusMsg.style.display = 'none';
+
+            if (!name || !gradeClass || pin.length !== 4) {
+                statusMsg.textContent = '모든 필드를 올바르게 입력해 주세요 (PIN 4자리).';
+                statusMsg.style.display = 'block';
+                return;
+            }
+            
+            // PIN을 간단하게 해싱 (실제 환경에서는 더 강력한 해싱 필요)
+            const pinHash = btoa(pin); 
+
+            try {
+                const userDocRef = doc(db, USERS_COLLECTION, userId);
+                
+                await setDoc(userDocRef, {
+                    name: name,
+                    grade_class_number: gradeClass,
+                    pin_hash: pinHash, 
+                    meal_status: false, // 기본값: 미신청
+                    isLoggedIn: true, // 등록 후 바로 로그인 상태로
+                    lastUpdated: Timestamp.now()
+                });
+
+                isUserRegistered = true;
+                studentProfile = { name, grade_class_number: gradeClass, pin_hash: pinHash, meal_status: false, isLoggedIn: true };
+                statusMsg.textContent = '✅ 등록 완료! QR 코드가 활성화됩니다.';
+                statusMsg.classList.remove('text-red-600');
+                statusMsg.classList.add('text-green-600');
+                statusMsg.style.display = 'block';
+                
+                // 성공 후 QR 코드 표시
+                updateStudentModeUI(); 
+
+            } catch (e) {
+                console.error("Registration failed:", e);
+                statusMsg.textContent = `❌ 등록 실패: ${e.message}`;
+                statusMsg.classList.remove('text-green-600');
+                statusMsg.classList.add('text-red-600');
+                statusMsg.style.display = 'block';
+            }
+        }
+        
+        /**
+         * 학생 로그인 처리 (핀 번호 확인)
+         */
+        window.loginUser = async function() {
+            if (!db || !userId) return;
+            const name = document.getElementById('login-name').value.trim();
+            const pin = document.getElementById('login-pin').value.trim();
+            const statusMsg = document.getElementById('login-status');
+            statusMsg.style.display = 'none';
+
+            if (!name || pin.length !== 4) {
+                statusMsg.textContent = '이름과 4자리 핀 번호를 입력해 주세요.';
+                statusMsg.style.display = 'block';
+                return;
+            }
+
+            try {
+                const userDocRef = doc(db, USERS_COLLECTION, userId);
+                const userDoc = await getDoc(userDocRef);
+
+                if (!userDoc.exists()) {
+                    statusMsg.textContent = '등록된 사용자 정보가 없습니다. 먼저 등록해 주세요.';
+                    statusMsg.style.display = 'block';
+                    return;
+                }
+                
+                const userData = userDoc.data();
+                const pinHash = btoa(pin);
+                
+                if (userData.name === name && userData.pin_hash === pinHash) {
+                    // 로그인 성공
+                    
+                    // Firestore에 로그인 상태 업데이트 (옵션)
+                    await updateDoc(userDocRef, { isLoggedIn: true, lastLogin: Timestamp.now() });
+                    
+                    studentProfile = { ...userData, isLoggedIn: true };
+                    statusMsg.textContent = '✅ 로그인 성공! QR 코드가 활성화됩니다.';
+                    statusMsg.classList.remove('text-red-600');
+                    statusMsg.classList.add('text-green-600');
+                    statusMsg.style.display = 'block';
+                    
+                    updateStudentModeUI(); 
+                } else {
+                    statusMsg.textContent = '이름 또는 핀 번호가 일치하지 않습니다.';
+                    statusMsg.classList.remove('text-green-600');
+                    statusMsg.classList.add('text-red-600');
+                    statusMsg.style.display = 'block';
+                }
+
+            } catch (e) {
+                console.error("Login failed:", e);
+                statusMsg.textContent = `❌ 로그인 실패: ${e.message}`;
+                statusMsg.classList.remove('text-green-600');
+                statusMsg.classList.add('text-red-600');
+                statusMsg.style.display = 'block';
+            }
+        }
+
+        /**
+         * 학생 로그아웃 처리
+         */
+        window.logoutUser = async function() {
+            if (!db || !userId || !studentProfile) return;
+            
+            try {
+                const userDocRef = doc(db, USERS_COLLECTION, userId);
+                await updateDoc(userDocRef, { isLoggedIn: false });
+                
+                studentProfile.isLoggedIn = false;
+                alert('로그아웃되었습니다.');
+                updateStudentModeUI();
+                showLoginForm();
+
+            } catch (e) {
+                console.error("Logout failed:", e);
+                alert(`로그아웃 중 오류가 발생했습니다: ${e.message}`);
+            }
+        }
+
+        /**
+         * QR 코드 표시
+         */
+        function displayStudentQrCode(data) {
+            if (!data) return;
+            const qrContainer = document.getElementById('qrcode-display');
+            
+            // 기존 QR 코드 인스턴스 제거
+            qrContainer.innerHTML = '';
+            
+            // 새로운 QR 코드 인스턴스 생성
+            qrCodeInstance = new QRCode(qrContainer, {
+                text: data,
+                width: 256,
+                height: 256,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+        }
+        
+        // --- 4. Scanner Functions (Staff Mode) ---
+
+        async function startScanner() {
+            if (videoStream || currentMode !== 'staff' || currentAdminTab !== 'scanner') return;
+
+            try {
+                // 카메라 해상도 최적화 
+                videoStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: { exact: "environment" },
+                        width: { max: 1280 }, 
+                        height: { max: 720 },
+                        frameRate: { ideal: 20 } 
+                    } 
+                });
+                
+                video.srcObject = videoStream;
+                video.setAttribute("playsinline", true); 
+                video.play();
+                
+                video.onloadedmetadata = () => {
+                    canvasElement.width = video.videoWidth;
+                    canvasElement.height = video.videoHeight;
+                    canvasElement.style.display = 'block';
+                    document.getElementById('no-camera-msg').style.display = 'none';
+                    document.getElementById('scan-ui-overlay').style.display = 'block';
+                    
+                    requestAnimationFrame(tick);
+                };
+
+            } catch (err) {
+                console.error("Camera access error:", err);
+                document.getElementById('no-camera-msg').style.display = 'flex';
+                canvasElement.style.display = 'none';
+                document.getElementById('scan-ui-overlay').style.display = 'none';
+                alertMessage('카메라 오류', '카메라를 사용할 수 없습니다. 권한을 확인해 주세요.', 'error');
+            }
+        }
+
+        function stopCamera() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+                video.srcObject = null;
+                
+                // 캔버스 크기 초기화 및 숨기기
+                canvasElement.width = 1;
+                canvasElement.height = 1;
+                canvasElement.style.display = 'none';
+            }
+        }
+
+        function tick() {
+            if (currentMode !== 'staff' || currentAdminTab !== 'scanner' || !videoStream) return; 
+            
+            if (video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing) {
+                const { videoWidth, videoHeight } = video;
+                
+                if (canvasElement.width !== videoWidth || canvasElement.height !== videoHeight) {
+                    canvasElement.width = videoWidth;
+                    canvasElement.height = videoHeight;
+                }
+
+                canvas.drawImage(video, 0, 0, videoWidth, videoHeight);
+                let imageData = canvas.getImageData(0, 0, videoWidth, videoHeight);
+                
+                let code = jsQR(imageData.data, imageData.width, imageData.height); 
+
+                if (code) {
+                    drawBox(code.location, videoWidth, videoHeight);
+                    if (!isProcessing) {
+                        processQrCode(code.data);
+                    }
+                } else {
+                    if (!isProcessing && lastScannedCode) {
+                        lastScannedCode = null;
+                    }
+                }
+            }
+            
+            if (!isProcessing) {
+                requestAnimationFrame(tick);
+            }
+        }
+
+        function drawBox(location, videoWidth, videoHeight) {
+            canvas.beginPath();
+            canvas.moveTo(location.topLeftCorner.x, location.topLeftCorner.y);
+            canvas.lineTo(location.topRightCorner.x, location.topRightCorner.y);
+            canvas.lineTo(location.bottomRightCorner.x, location.bottomRightCorner.y);
+            canvas.lineTo(location.bottomLeftCorner.x, location.bottomLeftCorner.y);
+            canvas.lineTo(location.topLeftCorner.x, location.topLeftCorner.y);
+            canvas.lineWidth = 4;
+            canvas.strokeStyle = isProcessing ? "#f59e0b" : "#10b981"; 
+            canvas.stroke();
+        }
+
+        // --- 5. Core Check-in Logic ---
+
+        async function processQrCode(scannedCode) {
+            if (!db || isProcessing) return;
+            
+            // QR 코드 내용은 이제 학생의 Firebase userId입니다.
+            if (lastScannedCode === scannedCode) {
+                return;
+            }
+            
+            isProcessing = true;
+            lastScannedCode = scannedCode;
+
+            alertMessage('정보 확인 중...', `스캔된 ID: ${scannedCode.substring(0, 8)}...`, 'waiting');
+
+            try {
+                // 1. 학생 (사용자) ID로 문서 조회
+                const studentDocRef = doc(db, USERS_COLLECTION, scannedCode);
+                const studentDoc = await getDoc(studentDocRef);
+
+                if (!studentDoc.exists()) {
+                    throw new Error(`[오류] 등록되지 않은 QR 코드입니다: ${scannedCode.substring(0, 10)}...`);
+                }
+
+                const studentData = studentDoc.data();
+                const nameInfo = studentData.name || '이름 없음';
+                const mealStatus = studentData.meal_status ? '신청함' : '미신청';
+                const gradeInfo = studentData.grade_class_number || '정보 없음';
+
+                // 2. 이미 오늘 체크인했는지 확인
+                const checkinRef = collection(db, CHECKINS_COLLECTION);
+                const q = query(checkinRef, 
+                    where("studentId", "==", scannedCode),
+                    where("date", "==", TODAY_DATE)
+                );
+                const checkinDocs = await getDocs(q);
+
+                if (!checkinDocs.empty) {
+                    // 이미 체크인한 경우
+                    alertMessage('⚠️ 이미 체크인됨', `${nameInfo} (${gradeInfo}) 님은 이미 오늘(${TODAY_DATE}) 체크인했습니다. 석식 상태: ${mealStatus}`, 'error');
+                    await addLogEntry(scannedCode, nameInfo, 'DUPLICATE', '이미 체크인됨');
+                    
+                } else {
+                    // 3. 배치 작업으로 체크인 기록 및 학생 정보 업데이트
+                    const batch = writeBatch(db);
+
+                    // A. 체크인 기록 추가
+                    const newCheckinRef = doc(checkinRef);
+                    batch.set(newCheckinRef, {
+                        studentId: scannedCode,
+                        name: nameInfo,
+                        grade_class_number: gradeInfo,
+                        meal_status: studentData.meal_status,
+                        date: TODAY_DATE,
+                        timestamp: Timestamp.now(),
+                        checkedInBy: userId
+                    });
+
+                    // B. 학생 정보에 최종 체크인 시간 업데이트 (현황판 업데이트용)
+                    batch.update(studentDocRef, {
+                        lastCheckin: Timestamp.now()
+                    });
+
+                    await batch.commit();
+
+                    // 4. 성공 메시지 표시
+                    alertMessage('✅ 입장 확인 완료', `${nameInfo} (${gradeInfo}) 님, 체크인 완료! 석식 상태: ${mealStatus}`, 'success');
+                    await addLogEntry(scannedCode, nameInfo, 'SUCCESS', '체크인 완료');
+                }
+                
+                // 3초 후 대기 상태로 전환 및 isProcessing 해제
+                setTimeout(() => {
+                    isProcessing = false;
+                    if (currentMode === 'staff' && currentAdminTab === 'scanner') {
+                         alertMessage('체크인 스캐너 대기 중...', '학생의 QR 코드를 스캔 영역에 비춰주세요.', 'waiting');
+                         requestAnimationFrame(tick); // 재귀 호출 재개
+                    }
+                }, 3000); 
+                
+            } catch (error) {
+                console.error("Check-in Error:", error.message);
+                alertMessage('❌ 처리 오류', `오류 발생: ${error.message}`, 'error');
+
+                await addLogEntry(scannedCode, '알 수 없음', 'ERROR', error.message);
+                
+                // 오류/실패 시에는 1초 후 재시도 가능
+                setTimeout(() => {
+                    isProcessing = false;
+                    lastScannedCode = null; // 실패했으므로 코드 초기화
+                    if (currentMode === 'staff' && currentAdminTab === 'scanner') {
+                        alertMessage('체크인 스캐너 대기 중...', '학생의 QR 코드를 스캔 영역에 비춰주세요.', 'waiting');
+                        requestAnimationFrame(tick); // 재귀 호출 재개
+                    }
+                }, 1000); // 1초 후 재시도 가능하도록 isProcessing 해제
+            }
+        }
+        
+        // --- 6. Data Management Functions (Data Tab - Admin) ---
+
+        /**
+         * 결제 상태 업데이트 (관리자용)
+         */
+        window.toggleMealStatus = async function(studentId, currentStatus) {
+            if (!db) return;
+            const newStatus = !currentStatus;
+            
+            try {
+                const userDocRef = doc(db, USERS_COLLECTION, studentId);
+                await updateDoc(userDocRef, {
+                    meal_status: newStatus,
+                    lastUpdated: Timestamp.now()
+                });
+                alert(`✅ ${studentDataCache[studentId].name} 님의 석식 상태가 "${newStatus ? '신청됨' : '미신청'}"으로 변경되었습니다.`);
+            } catch (e) {
+                console.error("Meal status update failed:", e);
+                alert(`❌ 상태 업데이트 실패: ${e.message}`);
+            }
+        }
+
+
+        /**
+         * 오늘 체크인 상태 모두 초기화 (오늘자 체크인 문서 전체 삭제)
+         */
+        window.resetTodayCheckins = async function() {
+            if (!db) return;
+            
+            if (!window.confirm("오늘 기록된 모든 체크인 기록을 삭제하고 상태를 초기화하시겠습니까? (되돌릴 수 없습니다)")) {
+                return;
+            }
+
+            try {
+                const checkinRef = collection(db, CHECKINS_COLLECTION);
+                const q = query(checkinRef, where("date", "==", TODAY_DATE));
+                const snapshot = await getDocs(q);
+                
+                if (snapshot.empty) {
+                    alert('오늘 삭제할 체크인 기록이 없습니다.');
+                    return;
+                }
+
+                const batch = writeBatch(db);
+                snapshot.docs.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+
+                await batch.commit();
+                alert('✅ 오늘 체크인 기록 ' + snapshot.size + '건이 모두 초기화되었습니다.');
+                await addLogEntry('SYSTEM', '관리자', 'RESET', `오늘자 체크인 기록 ${snapshot.size}건 초기화`);
+
+            } catch (e) {
+                console.error("Reset failed:", e);
+                alert('❌ 초기화 중 오류가 발생했습니다: ' + e.message);
+            }
+        }
+
+
+        // --- 7. Real-time Status Table Functions (Shared) ---
+        
+        /**
+         * 학생 현황 및 오늘 체크인 데이터를 실시간으로 수신합니다.
+         */
+        function setupStudentStatusListener() {
+            if (!db) return;
+
+            // 1. 학생 전체 목록 리스너 (USERS_COLLECTION)
+            onSnapshot(collection(db, USERS_COLLECTION), (snapshot) => {
+                studentDataCache = {};
+                snapshot.forEach(doc => {
+                    studentDataCache[doc.id] = { ...doc.data(), code: doc.id };
+                });
+                renderStudentStatusTable();
+            }, (error) => {
+                console.error("User List Listener Error:", error);
+            });
+
+            // 2. 오늘 체크인 기록 리스너
+            const checkinRef = collection(db, CHECKINS_COLLECTION);
+            const q = query(checkinRef, where("date", "==", TODAY_DATE));
+            
+            onSnapshot(q, (snapshot) => {
+                checkinDataCache = {};
+                snapshot.forEach(doc => {
+                    // 키는 학생 ID (userId)로 저장
+                    checkinDataCache[doc.data().studentId] = true; 
+                });
+                renderStudentStatusTable();
+            }, (error) => {
+                console.error("Check-in List Listener Error:", error);
+            });
+        }
+        
+        /**
+         * 캐시된 데이터를 기반으로 현황판 UI 및 관리자 탭을 업데이트합니다.
+         */
+        function renderStudentStatusTable() {
+            const tbody = document.getElementById('student-status-body');
+            const dataTabContent = document.getElementById('data-tab');
+
+            tbody.innerHTML = '';
+            
+            const students = Object.values(studentDataCache).filter(s => s.name); // 이름이 있는 등록된 학생만 표시
+            
+            // 이름 순으로 정렬 
+            students.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+            if (students.length === 0) {
+                tbody.innerHTML = '<tr class="bg-white border-b"><td class="py-4 px-6 text-center" colspan="5">등록된 학생 데이터가 없습니다.</td></tr>';
+                // 관리자 데이터 탭에도 메시지 표시
+                if (currentAdminTab === 'data') {
+                     dataTabContent.innerHTML = '<div class="p-6 text-center text-gray-500">등록된 학생이 없습니다. 학생들이 학생 모드에서 등록해야 목록이 표시됩니다.</div>';
+                }
+                return;
+            }
+
+            // ------------------ 현황판 테이블 렌더링 ------------------
+            students.forEach(student => {
+                const isCheckedIn = checkinDataCache[student.code] === true;
+
+                // 석식 상태 태그
+                const mealStatusText = student.meal_status ? '신청함' : '미신청';
+                const mealStatusClass = student.meal_status ? 'meal-status-paid' : 'meal-status-unpaid';
+
+                // 체크인 상태 태그
+                const checkinStatusText = isCheckedIn ? '체크인 완료' : '대기 중';
+                const checkinStatusClass = isCheckedIn ? 'checkin-status-complete' : 'checkin-status-waiting';
+
+                const row = `
+                    <tr class="bg-white border-b hover:bg-gray-50">
+                        <td class="py-4 px-6 font-medium text-gray-900 whitespace-nowrap">${student.name || '이름 없음'}</td>
+                        <td class="py-4 px-6">${student.grade_class_number || '정보 없음'}</td>
+                        <td class="py-4 px-6">
+                            <span class="meal-status-tag ${mealStatusClass}">${mealStatusText}</span>
+                        </td>
+                        <td class="py-4 px-6">
+                            <span class="meal-status-tag ${checkinStatusClass}">${checkinStatusText}</span>
+                        </td>
+                        <td class="py-4 px-6 font-mono text-xs">${student.code.substring(0, 8)}...</td>
+                    </tr>
+                `;
+                tbody.insertAdjacentHTML('beforeend', row);
+            });
+            
+            // ------------------ 관리자 데이터 탭 렌더링 ------------------
+            if (currentAdminTab === 'data') {
+                let dataTableHtml = `
+                    <div class="overflow-x-auto relative shadow-md sm:rounded-lg">
+                        <table class="w-full text-sm text-left text-gray-500">
+                            <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="py-3 px-6">이름</th>
+                                    <th scope="col" class="py-3 px-6">학번</th>
+                                    <th scope="col" class="py-3 px-6">QR 코드 ID</th>
+                                    <th scope="col" class="py-3 px-6">석식 결제 상태</th>
+                                    <th scope="col" class="py-3 px-6">상태 변경</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+                
+                students.forEach(student => {
+                    const statusText = student.meal_status ? '신청됨' : '미신청';
+                    const buttonText = student.meal_status ? '미신청으로 변경' : '신청됨으로 변경';
+                    const buttonClass = student.meal_status ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600';
+                    
+                    dataTableHtml += `
+                        <tr class="bg-white border-b hover:bg-gray-50">
+                            <td class="py-4 px-6 font-medium text-gray-900 whitespace-nowrap">${student.name || '이름 없음'}</td>
+                            <td class="py-4 px-6">${student.grade_class_number || '정보 없음'}</td>
+                            <td class="py-4 px-6 font-mono text-xs">${student.code.substring(0, 8)}...</td>
+                            <td class="py-4 px-6 font-bold text-center ${student.meal_status ? 'text-green-600' : 'text-yellow-600'}">${statusText}</td>
+                            <td class="py-4 px-6">
+                                <button onclick="toggleMealStatus('${student.code}', ${student.meal_status})" 
+                                        class="text-white text-xs font-bold py-1 px-3 rounded-full transition-colors ${buttonClass}">
+                                    ${buttonText}
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                dataTableHtml += '</tbody></table></div>';
+                
+                // 기존 내용을 덮어쓰기 전에 필요한 제목과 메시지를 유지
+                 dataTabContent.innerHTML = `
+                    <div class="bg-gray-50 p-6 rounded-xl shadow-inner mb-6">
+                        <h3 class="text-xl font-bold text-gray-800 mb-3">학생 정보 관리 (결제 상태 업데이트)</h3>
+                        <p class="text-gray-600 text-sm mb-4">
+                            학생이 등록(회원가입)을 완료하면 여기에 목록이 표시됩니다. 결제 상태를 수정할 수 있습니다.
+                        </p>
+                    </div>
+                    ${dataTableHtml}
+                `;
+            }
+        }
+
+
+        // --- 8. Logging Functions ---
+        
+        async function addLogEntry(studentId, name, type, message) {
+            const logCollection = collection(db, LOGS_COLLECTION);
+            try {
+                await addDoc(logCollection, {
+                    timestamp: Timestamp.now(),
+                    studentId: studentId,
+                    name: name,
+                    type: type, // SUCCESS, DUPLICATE, ERROR, RESET
+                    message: message,
+                    scannedBy: userId,
+                });
+            } catch (error) {
+                console.error("Failed to write log entry:", error);
+            }
+        }
+
+        function setupLogListener() {
+            const logCollection = collection(db, LOGS_COLLECTION);
+            const q = query(logCollection); 
+            
+            onSnapshot(q, (snapshot) => {
+                const logList = document.getElementById('log-list');
+                logList.innerHTML = '';
+                
+                const logs = [];
+                snapshot.forEach(doc => logs.push(doc.data()));
+                
+                logs.sort((a, b) => b.timestamp.toMillis() - a.timestamp.toMillis());
+                
+                logs.slice(0, 8).forEach(log => {
+                    const li = document.createElement('li');
+                    li.className = 'p-2 rounded';
+                    
+                    const time = log.timestamp ? new Date(log.timestamp.toMillis()).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '시간 알 수 없음';
+                    let statusClass = '';
+                    let statusIcon = '';
+
+                    if (log.type === 'SUCCESS') {
+                        statusClass = 'bg-green-100 text-green-800';
+                        statusIcon = '✅';
+                    } else if (log.type === 'DUPLICATE' || log.type === 'ERROR') {
+                        statusClass = 'bg-red-100 text-red-800';
+                        statusIcon = '❌';
+                    } else if (log.type === 'RESET') {
+                        statusClass = 'bg-purple-100 text-purple-800';
+                        statusIcon = '🔄';
+                    } else {
+                        statusClass = 'bg-gray-100 text-gray-800';
+                        statusIcon = 'ℹ️';
+                    }
+                    
+                    li.classList.add(statusClass);
+                    const nameDisplay = log.name && log.name !== '알 수 없음' ? log.name : '미등록 사용자';
+                    const idDisplay = log.studentId && log.studentId !== 'SYSTEM' ? log.studentId.substring(0, 4) + '...' : log.studentId;
+
+                    li.innerHTML = `<span class="font-bold mr-1">${statusIcon} ${time}</span> ${nameDisplay} (${idDisplay}) - ${log.message}`;
+                    logList.appendChild(li);
+                });
+
+                if (logs.length === 0) {
+                    logList.innerHTML = '<li class="p-2 bg-gray-50 rounded">아직 기록된 스캔이 없습니다.</li>';
+                }
+            }, (error) => {
+                console.error("Log Listener Error:", error);
+            });
+        }
+        
+        // --- 9. Initial Call ---
+        // Auth listener가 모든 설정을 시작합니다.
+
+    </script>
+</body>
+</html>
